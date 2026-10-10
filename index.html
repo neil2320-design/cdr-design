@@ -1,5 +1,9 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
-<title>CDR 迴路設計手冊</title>
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDR 迴路設計與實驗</title>
 <style>
 /*
   設計規劃 (Design Plan)
@@ -151,6 +155,13 @@ section.card .sub{ color:var(--ink-dim); font-size:15px; margin-top:0;}
   color:var(--ink-dim); padding:6px 12px; border-radius:999px; cursor:pointer; user-select:none;
 }
 .chip.active{ border-color:var(--accent); color:var(--accent); background:color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.chip-group{
+  background:var(--surface); border:1px solid var(--border); border-radius:10px;
+  padding:10px 12px; margin-top:10px;
+}
+.chip-group:first-child{ margin-top:0; }
+.chip-group-label{ font-family:var(--font-mono); font-size:11px; color:var(--ink-faint); margin-bottom:6px; }
+.chip-group .btnrow{ margin-top:0; }
 
 .chartwrap{ position:relative; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px; margin:16px 0; }
 .chartwrap svg{ display:block; width:100%; height:auto; }
@@ -193,11 +204,14 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
   };
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-svg.js"></script>
+</head>
+<body>
 
 <div class="topbar">
   <div class="topbar-inner">
     <span class="topbar-title">CDR·LOOP</span>
     <div class="dots" id="dots">
+      <a href="#sec-intro" class="dot" data-sec="sec-intro">⓪ 背景動機</a>
       <a href="#sec-mmpd" class="dot" data-sec="sec-mmpd">① 相位偵測</a>
       <a href="#sec-char" class="dot" data-sec="sec-char">② 特徵方程</a>
       <a href="#sec-valid" class="dot" data-sec="sec-valid">③ 響應驗證</a>
@@ -212,10 +226,11 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
 
   <!-- ===================== HERO ===================== -->
   <div class="hero">
-    <div class="kicker">CLOCK &amp; DATA RECOVERY · 設計手冊</div>
-    <h1>CDR 迴路設計手冊：從 MM-PD 到 VCO 的相位追蹤</h1>
+    <div class="kicker">CLOCK &amp; DATA RECOVERY · 設計與實驗</div>
+    <h1>CDR 迴路設計與實驗：</h1>
+    <h1>從 MM-PD 到 VCO 的相位追蹤</h1>
     <p class="lead">
-      這是對應 CDR 方塊圖的完整設計推導：相位偵測器如何產生誤差、
+      這是架構圖中 CDR 模組的完整設計推導：相位偵測器如何產生誤差、
       二階特徵方程式如何決定 Kp / Ki、響應驗證如何確認模型正確，
       以及追到的相位最終如何交給 VCO 產生實際取樣時鐘。全部公式可拖拉互動，直接看見參數改變的後果。
     </p>
@@ -224,6 +239,7 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
       <div class="diagram-caption">原圖：Signed MM-PD → PI (特徵方程 s² + Kp·s + Ki = 0) → VCO → 8-PI + DPI，Ref Clk 驅動 VCO</div>
     </div>
     <div class="roadmap">
+      <a href="#sec-intro"><b>⓪</b>為什麼需要 CDR——Jitter 從哪裡來、怎麼修</a>
       <a href="#sec-mmpd"><b>①</b>相位怎麼被量出來——MM-PD 原理</a>
       <a href="#sec-char"><b>②</b>為什麼是二階、為什麼 ζ=2——特徵方程</a>
       <a href="#sec-valid"><b>③</b>模型對不對——Pulse / Step 響應驗證</a>
@@ -232,10 +248,81 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
     </div>
   </div>
 
+  <!-- ===================== SECTION 0 : WHY CDR / JITTER BACKGROUND ===================== -->
+  <section class="card" id="sec-intro">
+    <div class="sec-tag">⓪ 背景：為什麼需要 CDR</div>
+    <h2>0. 架構圖加入CDR如何去模擬Jitter灌注？</h2>
+    <p class="sub">在進入 MM-PD 跟 Kp/Ki 的數學之前，先把「CDR 運作原理」說明——這決定了後面所有設計取捨的目的。</p>
+
+    <h3>Jitter 的分類：論文中關心哪一種？</h3>
+    <p>
+      高速 SerDes 量到的總抖動 (Total Jitter, TJ) 通常拆成兩大類：決定性抖動 (Deterministic Jitter, DJ) 跟隨機
+      抖動 (Random Jitter, RJ)。DJ 底下又分：週期性抖動 (Periodic Jitter, PJ，例如電源雜訊、鄰道串擾在固定頻率
+      上的擾動)、資料相關抖動 (Data-Dependent Jitter, DDJ，主要是通道頻率響應造成的 ISI，加上 duty-cycle
+      distortion)、以及有界非相關抖動 (BUJ)。RJ 則通常假設為高斯分布、無界，來源是熱雜訊，一般用標準差 σ 描述。
+    </p>
+    <table class="datatab">
+      <tr><th>類型</th><th>來源</th><th>統計特性</th><th>這份文件的 CDR 處理得了嗎？</th></tr>
+      <tr><td>RJ（隨機抖動）</td><td>熱雜訊</td><td>高斯分布，無界</td><td>迴路頻寬內的低頻成分可以追，高頻成分追不到</td></tr>
+      <tr><td>SJ（正弦抖動，PJ 的子集）</td><td>電源雜訊、串擾等固定頻率擾動</td><td>單一頻率、確定性</td><td>同上，由 H(jω) 決定追蹤程度（見第④節）</td></tr>
+      <tr><td>DDJ / ISI</td><td>通道本身的頻率響應（第①節的 h(t)）</td><td>跟資料圖案相關，非隨機</td><td>不是 PI 迴路的工作，是等化器 (CTLE/FFE/DFE) 的責任</td></tr>
+    </table>
+    <div class="callout good">
+      <b>本論文CDR設計討論的範圍：</b>Kp/Ki 的設計目標是壓低 RJ、SJ（PJ）落在迴路頻寬以內的成分，讓取樣時刻持續跟著資料的
+      真實中心走。DDJ/ISI 雖然也會讓 S-curve（第①節）或 e(n) 偏移，但那是通道響應本身造成的失真，MM-PD 只是
+      「在無 ISI 假設下對它不敏感」，不是主動把它修正掉——真正消除 ISI 要靠等化器。
+    </div>
+
+    <h3>Jitter 怎麼被模擬出來？</h3>
+    <p>在模擬裡，RJ 跟 SJ 都是用一串「每個符元的取樣時刻偏移量」δ(n) 加到理想取樣時刻上來實現：</p>
+    <div class="eq-row">
+      <div class="eqbox">
+        <div class="eq">\( \tau_{RJ}(n) \sim \mathcal{N}(0,\sigma_{RJ}^2) \)</div>
+        <div class="eq-label">RJ：每符元獨立的高斯亂數（白雜訊近似）</div>
+      </div>
+      <div class="eqbox">
+        <div class="eq">\( \tau_{SJ}(n) = A_{SJ}\sin(2\pi f_{SJ} nT) \)</div>
+        <div class="eq-label">SJ：固定振幅、固定頻率的正弦波——跟第④節「正弦抖動」切換鈕的注入方式完全一樣</div>
+      </div>
+    </div>
+    <p>
+      兩者疊加成總擾動序列 \( \delta(n) = \tau_{RJ}(n) + \tau_{SJ}(n) \)。第④節模擬裡 <code>tgt = 0.15·sin(2π·n/180)</code>
+      這行程式碼，本質上就是在注入一個 SJ（振幅 0.15 UI、週期 180 符元），只是沒有疊加 RJ 成分。
+    </p>
+    <p>
+      <b>工程範例：</b>假設 σ<sub>RJ</sub>=0.005 UI rms、SJ 振幅 0.05 UI @ 10 MHz、baud=112 GBaud，換算成每符元的
+      角頻率後代入上面兩式，就能產生一串長度跟模擬符元數相同的 δ(n) 陣列，直接餵給第④節的離散遞迴當作目標
+      相位擾動，取代原本單純的階躍或正弦輸入。
+    </p>
+
+    <h3>注入 Jitter 後，訊號上發生了什麼變化？ 怎麼模擬訊號相位變化？</h3>
+    <p>
+      δ(n) 代表「理想上應該在 nT 取樣，但實際取樣點被挪移了 δ(n)·T」。在數值模擬裡，這相當於把通道脈衝響應
+      h(t) 的取樣位置從 nT 改成 nT+δ(n)T 再重建 x(n)、d(n)。效果有兩個層面：一是取樣點偏離理想位置會讓 ISI
+      變嚴重（吃掉的脈衝相鄰能量變多），二是 MM-PD 量到的 e(n) 會同時包含「真實殘留追蹤誤差」跟「注入的
+      δ(n)」兩個成分——這正是第①節 e(n) 公式跟第④節 pi_code 迴路要面對的輸入。δ(n) 這串數字序列，就是「相位
+      延遲數字序列」：它是驅動整個模擬的輸入，不是輸出。
+    </p>
+
+    <h3>CDR 怎麼把它修正回來？——8-PI 怎麼模擬</h3>
+    <p>
+      迴路看到的 e(n) 驅動 pi_code[n]（第④節的離散遞迴），pi_code 再經過第⑤節的 8-PI（8 個粗相位）+ DPI
+      （細相位插補）轉成實際的取樣時鐘邊緣位置。閉迴路的目標就是讓 pi_code[n] 持續逼近 \( -\delta(n) \)，把
+      注入的擾動「追到位」。但追不追得掉要看 δ(n) 的頻率成分：
+    </p>
+    <p>
+      <b>工程範例：</b>延續上面 σ<sub>RJ</sub>=0.005 UI、SJ 10 MHz 的例子，若迴路頻寬 ωₙ 設計在 5 MHz（第③節的
+      範例值），10 MHz 的 SJ 已經超過 ωₙ，依第④節 H(jω) 的計算方式，pi_code 大概只能追到 SJ 振幅的一部分
+      （不是全部 0.05 UI），殘留的部分會直接變成輸出相位的抖動；RJ 因為頻譜很寬，迴路只能壓低落在 ωₙ 以內的
+      低頻部分，高頻的 RJ 成分同樣會穿透。這就是為什麼 ζ、ωₙ 的選擇（第②節）不是愈快愈好——頻寬的選擇決定了
+      「追得到多少 jitter、又會不會把高頻雜訊放大」，是整個 Kp/Ki 設計真正要解決的問題。
+    </p>
+  </section>
+
   <!-- ===================== SECTION 1 : MM-PD ===================== -->
   <section class="card" id="sec-mmpd">
     <div class="sec-tag">① 起點：相位怎麼被量出來</div>
-    <h2>Mueller-Muller 相位偵測器 (MM-PD)</h2>
+    <h2>1. Mueller-Muller 相位偵測器 (MM-PD)</h2>
     <p class="sub">在談 Kp、Ki 之前，先搞懂「誤差」這個數字從哪裡來——它決定了整個迴路要去追的東西是什麼。</p>
 
     <p>
@@ -263,7 +350,7 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
 
     <div class="console">
       <div class="ctrl-row">
-        <label for="betaSlider">脈衝 roll-off β</label>
+        <label for="betaSlider">脈衝 roll-off 滾降係數 β</label>
         <input type="range" id="betaSlider" min="0.05" max="0.8" step="0.01" value="0.3">
         <span class="val" id="betaVal">0.30</span>
       </div>
@@ -278,12 +365,98 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
     </div>
     <div class="callout good"><b>重點：</b>S-curve 在 τ=0 附近近似一條直線，直線的斜率就是「相位偵測器增益 K<sub>pd</sub>」——
       下一節的 Kp、Ki 其實是建立在「誤差對相位近似線性」這個假設上。</div>
+
+    <h3>工程範例：從 S-curve 算出 Kpd</h3>
+    <p>
+      S-curve 公式 \( f(\tau) \propto h(\tau-T) - h(\tau+T) \)（T = 1 UI）在 τ=0 的導數就是 Kpd。因為無 ISI 脈衝響應
+      h(t) 是偶函數，h′(t) 是奇函數，兩者相減會得到一個乾淨的結果：
+    </p>
+    <div class="eqbox">
+      <div class="eq">\( K_{pd} = f'(0) = h'(-T) - h'(T) = -2h'(T) \)</div>
+      <div class="eq-label">只要算出脈衝響應在「偏離峰值一個符元週期」處的斜率，乘以 −2 就是偵測器增益</div>
+    </div>
+
+    <h3>raised-cosine 脈衝響應的公式</h3>
+    <p>
+      本頁 S-curve 圖用的脈衝響應 h(t)（t 以符元週期 UI 正規化）是標準的 raised-cosine Nyquist 脈衝：
+    </p>
+    <div class="eqbox">
+      <div class="eq">\( h(t) = \mathrm{sinc}(t)\cdot\dfrac{\cos(\pi\beta t)}{1-(2\beta t)^2} \,,\quad \mathrm{sinc}(t)=\dfrac{\sin(\pi t)}{\pi t} \)</div>
+      <div class="eq-label">t=0 時取極限值 h(0)=1；分母在 t=±1/(2β) 處為 0，該點用羅必達極限 h=(π/4)·sinc(1/(2β)) 補上，避免除以零</div>
+    </div>
+    <p>
+      這個公式本身是 sinc 乘上一個三角函數再除以一個二次式，直接解析微分雖然可行但式子很長、容易出錯，而且下一步只需要
+      在「單一個點」(t = T = 1 UI) 的斜率，所以本頁用<b>數值微分（中央差分）</b>取代手算解析導數——取一個很小的位移 Δ，
+      比較 t=T 兩側的 h 值：
+    </p>
+    <div class="eqbox">
+      <div class="eq">\( h'(T;\,\beta) \approx \dfrac{h(T+\Delta;\,\beta) - h(T-\Delta;\,\beta)}{2\Delta} \)</div>
+      <div class="eq-label">這是中央差分（numerical differentiation）的通用公式，對任何函數在任何點都適用——公式本身看不到 β，因為它只是「兩側相減除以間距」的算子</div>
+    </div>
+    <p>
+      β 不是出現在這個差分公式裡，而是藏在要代入的 h(t) 本身：h(T+Δ) 跟 h(T−Δ) 這兩個函數值，要先用上面那個
+      <b>帶 β 的 raised-cosine 公式</b>算出來，β 不同、算出來的 h(T±Δ) 就不同，差分的結果（進而 Kpd）自然也不同。
+      換句話說：<b>raised-cosine 公式決定「代哪個數字進去」，中央差分公式只負責「怎麼從兩個數字算出斜率」</b>——
+      下面實際代入 β=0.3 就會看到 β 是在算 h(t₁)、h(t₂) 這一步用到的，不是在差分公式本身。
+    </p>
+
+    <h3>實際算一次：β=0.3 怎麼得到 Kpd=1.837</h3>
+    <p>取 Δ=10⁻⁴、T=1，把 β=0.3 代入上面的 h(t) 公式，在 t=T 兩側各算一次：</p>
+    <table class="datatab">
+      <tr><th>量</th><th>算式 / 數值</th></tr>
+      <tr><td>t₁ = T − Δ</td><td>0.9999</td></tr>
+      <tr><td>t₂ = T + Δ</td><td>1.0001</td></tr>
+      <tr><td>h(t₁) = h(0.9999)，β=0.3</td><td>9.185 × 10⁻⁵</td></tr>
+      <tr><td>h(t₂) = h(1.0001)，β=0.3</td><td>−9.183 × 10⁻⁵</td></tr>
+      <tr><td>h′(T) ≈ [h(t₂) − h(t₁)] / (2Δ)</td><td>(−9.183×10⁻⁵ − 9.185×10⁻⁵) / 2×10⁻⁴ = <b>−0.9184</b></td></tr>
+      <tr><td>K<sub>pd</sub> = −2·h′(T)</td><td>−2 × (−0.9184) = <b>1.837</b></td></tr>
+    </table>
+    <p>
+      會剛好落在 t=T=1 兩側取樣不是巧合：raised-cosine 是 Nyquist 脈衝，定義上就是 h(nT)=0（n 為非零整數），也就是
+      h(1)=0——這正是「取樣點之間互不干擾（ISI-free）」的那個設計條件。因此 t=0.9999 跟 t=1.0001 量到的兩個值幾乎
+      大小相等、正負相反，相減再除以 2Δ 就是切線斜率，乘上 −2 就是 Kpd。
+    </p>
+    <div class="callout good">
+      <b>交叉驗證：</b>直接對 S-curve f(τ)=h(τ−T)−h(τ+T) 在 τ=0 附近做同樣的中央差分（不先拆成 h′(T)），
+      算出來同樣是 1.8368…，與用 \( K_{pd}=-2h'(T) \) 這個恆等式算出的結果完全一致，確認推導沒有問題。
+    </div>
+    <p>换其他 β 時公式與步驟完全一樣，只是代入不同的 β 重算 h(t)。用同一套方法掃過本頁可調的 β 範圍：</p>
+    <table class="datatab">
+      <tr><th>脈衝 roll-off 滾降係數 β</th><th>Kpd = f′(0)</th></tr>
+      <tr><td>0.1</td><td>1.981</td></tr>
+      <tr><td>0.3（本頁預設，上面已逐步算出）</td><td><b>1.837</b></td></tr>
+      <tr><td>0.5</td><td>1.571</td></tr>
+      <tr><td>0.8</td><td>1.037</td></tr>
+    </table>
+    <p>β 越大（脈衝邊緣越平緩），Kpd 越小——S-curve 在零點附近的斜率變平，偵測器對微小相位偏移越不敏感。</p>
+    <p>
+      這個 Kpd 要接回第②節算出的 Kp、Ki：那組是「假設偵測器增益=1」的理想值，實機要除以 Kpd 才能讓真實閉迴路的
+      特徵方程式仍然等於 \( s^2+2\zeta\omega_n s + \omega_n^2=0 \)，而不是變成 \( s^2+K_{pd}K_p s + K_{pd}K_i=0 \)：
+    </p>
+    <div class="eqbox">
+      <div class="eq">\( K_{p,\text{code}} = \dfrac{2\zeta\omega_n}{K_{pd}} \,,\quad K_{i,\text{code}} = \dfrac{\omega_n^2}{K_{pd}} \)</div>
+    </div>
+    <table class="datatab">
+      <tr><th>量</th><th>數值</th></tr>
+      <tr><td>ωₙ（正規化，每符元，沿用第③節工程範例）</td><td>2.805 × 10⁻⁴</td></tr>
+      <tr><td>ζ</td><td>2.0</td></tr>
+      <tr><td>理想 Kp = 2ζωₙ（假設 Kpd=1）</td><td>1.122 × 10⁻³</td></tr>
+      <tr><td>理想 Ki = ωₙ²（假設 Kpd=1）</td><td>7.868 × 10⁻⁸</td></tr>
+      <tr><td>Kpd（β=0.3）</td><td>1.837</td></tr>
+      <tr><td>實際 Kp_code = Kp / Kpd</td><td>6.11 × 10⁻⁴</td></tr>
+      <tr><td>實際 Ki_code = Ki / Kpd</td><td>4.28 × 10⁻⁸</td></tr>
+    </table>
+    <p>
+      這兩個才是真正該寫進硬體或 MATLAB 迴路裡的係數。量測法也可以：直接在實機上掃描取樣相位，用兩個貼近 τ=0
+      的對稱點做中央差分 \( K_{pd} \approx \dfrac{S(+\Delta)-S(-\Delta)}{2\Delta} \)，不需要知道脈衝響應解析式，缺點是量測
+      雜訊會直接影響斜率估計的準確度，通常要多次平均。
+    </p>
   </section>
 
   <!-- ===================== SECTION 2 : CHARACTERISTIC EQUATION ===================== -->
   <section class="card" id="sec-char">
     <div class="sec-tag b">② 把迴路變成一個方程式</div>
-    <h2>二階特徵方程式與 Kp / Ki 的由來</h2>
+    <h2>2. 二階特徵方程式與 Kp / Ki 的由來</h2>
     <p class="sub">方塊圖上寫的 \( s^2 + K_p s + K_i = 0 \)，就是整個 PI 迴路的「身分證」——它的根（pole）決定了追蹤的快慢與是否震盪。</p>
 
     <h3>為什麼用二階特徵方程式？</h3>
@@ -310,6 +483,78 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
       <div class="eq">\( K_p = 2\zeta\omega_n \,,\quad K_i = \omega_n^2 \)</div>
       <div class="eq-label">只要先決定「想要多快」(ωₙ) 跟「想要多穩」(ζ)，Kp/Ki 就是代數結果</div>
     </div>
+
+    <h3>一階 vs 二階：為什麼不能只用比例控制？</h3>
+    <p>
+      迴路濾波器如果只留比例項（Kp，Ki=0），加上 VCO 本身天生貢獻的那一個積分器（頻率積分成相位），
+      開迴路只有一個積分器，閉迴路就只剩一階：
+    </p>
+    <div class="eq-row">
+      <div class="eqbox">
+        <div class="eq">\( s + K_p = 0 \)</div>
+        <div class="eq-label">一階（Type-I，純比例）特徵方程式——單一實根 \( s=-K_p \)，永遠不會震盪</div>
+      </div>
+      <div class="eqbox">
+        <div class="eq">\( s^2 + K_p s + K_i = 0 \)</div>
+        <div class="eq-label">二階（Type-II，PI）特徵方程式——本節推導的式子，兩個根（實根或共軛複根，視 ζ）</div>
+      </div>
+    </div>
+    <p>
+      一階系統看起來更簡單、也永遠不會 overshoot，但它有一個對 CDR 來說致命的缺陷：只能把「相位階躍」的穩態誤差壓到
+      0，壓不掉「頻率階躍」（也就是收發端時脈有固定 ppm 偏差時，相當於一個持續斜升的相位輸入）的穩態誤差。可以證明
+      一階迴路在固定頻率偏移 Δω 下的穩態相位誤差是：
+    </p>
+    <div class="eqbox">
+      <div class="eq">\( e_{ss} = \dfrac{\Delta\omega}{K_p} \)</div>
+      <div class="eq-label">一階迴路對頻率偏移的穩態相位誤差——不是 0，Kp 再大也只能縮小、無法消除</div>
+    </div>
+    <p>
+      任何真實晶振都有 ppm 等級的頻率偏差，這代表一階迴路的取樣點會永遠固定偏離理想位置一截，長期吃掉眼圖 margin。
+      二階（PI）迴路因為多了一個積分器（開迴路總共兩個積分器：VCO 的 + PI 的 Ki/s），會持續累積任何殘留誤差、
+      一路修正到剛好抵銷掉這個頻率偏移為止——這正是第③節「H(0)=Ki/Ki=1，Type-II 迴路穩態相位誤差為零」的來源：
+      不管輸入是相位階躍還是頻率階躍，穩態誤差都是 0。代價是多了一個自由度（ζ），ζ&lt;1 時會出現複數共軛根、
+      產生 overshoot/震盪，所以才需要像下面這樣仔細選 ζ。
+    </p>
+    <table class="datatab">
+      <tr><th>項目</th><th>一階（Type-I，純比例）</th><th>二階（Type-II，PI，本文件採用）</th></tr>
+      <tr><td>迴路濾波器</td><td>Kp</td><td>Kp + Ki/s</td></tr>
+      <tr><td>開迴路積分器數</td><td>1（僅 VCO）</td><td>2（VCO + PI 積分項）</td></tr>
+      <tr><td>對相位階躍的穩態誤差</td><td>0</td><td>0</td></tr>
+      <tr><td>對頻率階躍（ppm offset）的穩態誤差</td><td>Δω/Kp（非 0）</td><td>0</td></tr>
+      <tr><td>可能 overshoot / 震盪？</td><td>不會</td><td>會（ζ&lt;1 時）</td></tr>
+    </table>
+
+    <h3>頻率躍階的完整時域推導</h3>
+    <p>
+      上面只給了穩態值，完整時域響應證明更直接：頻率階躍 Δω 在相位域其實是一個斜坡輸入
+      \( \varphi_{in}(t)=\Delta\omega\cdot t \)，拉普拉斯轉換 \( \Phi_{in}(s)=\Delta\omega/s^2 \)。誤差轉移函數是
+      \( 1-H(s) \)：
+    </p>
+    <div class="eq-row">
+      <div class="eqbox">
+        <div class="eq">\( E_1(s) = \Phi_{in}(s)\cdot\dfrac{s}{s+K_p} = \dfrac{\Delta\omega}{s(s+K_p)} \)</div>
+        <div class="eq-label">一階迴路的誤差（Laplace domain）</div>
+      </div>
+      <div class="eqbox">
+        <div class="eq">\( E_2(s) = \Phi_{in}(s)\cdot\dfrac{s^2}{s^2+K_p s+K_i} = \dfrac{\Delta\omega}{s^2+K_p s+K_i} \)</div>
+        <div class="eq-label">二階迴路的誤差（Laplace domain）</div>
+      </div>
+    </div>
+    <p>部分分式展開、取拉普拉斯反轉換：</p>
+    <div class="eqbox">
+      <div class="eq">\( e_1(t) = \dfrac{\Delta\omega}{K_p}\left(1-e^{-K_p t}\right) \)</div>
+      <div class="eq-label">一階：誤差從 0 指數上升，收斂到非零的 Δω/Kp——「追不乾淨」</div>
+    </div>
+    <div class="eqbox">
+      <div class="eq">\( e_2(t) = \dfrac{\Delta\omega}{p_1-p_2}\left(e^{p_1 t}-e^{p_2 t}\right) \)</div>
+      <div class="eq-label">二階：p₁、p₂ 是本節算出的兩個 pole（皆為負實部），t→∞ 時 e₂(t)→0——完全追上</div>
+    </div>
+    <p>
+      這組 e₁(t)、e₂(t) 就是「頻率躍階響應」的完整時域曲線：一階系統的誤差會收斂到一個固定的非零平台
+      （Δω/Kp），二階系統的誤差則會跟相位階躍響應一樣，按 p₁、p₂ 決定的時間常數衰減到 0。這正是二階（Type-II）
+      迴路的定義性優勢：不只相位階躍能追到 0，連頻率階躍（也就是斜坡輸入）也能追到 0——這個性質在控制理論裡
+      稱為「Type-2 系統可以無穩態誤差地追蹤斜坡輸入」，是只有比例控制（一階）永遠做不到的事。
+    </p>
 
     <h3>Pole 的原理：震盪從哪裡來</h3>
     <p>解特徵方程式的根（pole）：</p>
@@ -355,7 +600,7 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
   <!-- ===================== SECTION 3 : VALIDATION ===================== -->
   <section class="card" id="sec-valid">
     <div class="sec-tag">③ 驗證：模型說的對不對</div>
-    <h2>Pulse / Step 響應驗證特徵方程式</h2>
+    <h2>3. Pulse / Step 響應驗證特徵方程式</h2>
     <p class="sub">光解方程式不夠，要把閉迴路響應算出來、看它是否符合 pole 理論的預測。</p>
 
     <p>把相位偵測器到 PI 輸出視為閉迴路轉移函數：</p>
@@ -405,12 +650,40 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
       <tr><td>慢 pole 時間常數 τ<sub>slow</sub>=1/|p₁|</td><td>≈ 13305 符元</td></tr>
       <tr><td>settling time ≈ 4·τ<sub>slow</sub></td><td>≈ 53220 符元 ≈ 475&nbsp;ns</td></tr>
     </table>
+
+    <h3>相位階躍響應是什麼？</h3>
+    <p>
+      相位階躍是控制理論裡最基本的系統鑑別訊號（跟量測一顆放大器的 step response 道理一樣），
+      目的是驗證「閉迴路的動態行為」跟 pole 方程式預測的一不一樣——overshoot、settling time 這些數字直接對應
+      ζ、ωₙ，相位階躍則是「暫態」（transient）鑑別訊號，回答的問題是「迴路多快、多穩」，
+      而不是「迴路對某種 jitter 容忍多少」。
+    </p>
+    <p>
+      更精確地說，step response 跟 frequency response 是同一個 H(s) 的兩種呈現方式（拉普拉斯轉換的一體兩面）——
+      第④節用正弦抖動 (SJ) 測出來的 H(jω) 頻率響應，理論上跟這裡用階躍測出來的 overshoot/settling time 是同一組
+      ζ、ωₙ 決定的，兩種測法殊途同歸。換句話說，這裡驗證過的 pole 模型，就是後面不管測 PJ 還是 RJ 容忍度
+      （JTOL）或 jitter transfer（JTF）時，背後共用的同一個閉迴路模型。
+    </p>
+    <p>
+      實際工程上，真正會讓迴路經歷接近「階躍」的事件通常是：參考時脈切換、SSC (spread-spectrum clocking)
+      profile 起始邊緣、熱插拔重新鎖定、或是迴路剛啟動時的瞬間拉入 (pull-in)。這類事件不是週期性也不是隨機
+      統計性的，是一次性的暫態，所以階躍響應測的其實是「迴路撐不撐得住突發的大相位/頻率變化，多久能穩下來」，
+      對應的是 CDR 規格裡常見的「re-lock time」或「loop bandwidth / peaking」驗證項目，而不是 PJ/RJ tolerance
+      本身。
+    </p>
+    <p>
+      <b>工程範例：</b>用上面 112&nbsp;GBaud、ζ=2 的計算結果來對規格——假設系統要求「參考時脈切換後必須在
+      600&nbsp;ns 內重新鎖定、且 overshoot 不得超過 5%」，上面算出 settling time≈475&nbsp;ns、overshoot≈4%，
+      兩者都壓在規格內，這組 Kp/Ki 設計就算通過了這項暫態驗證；如果 settling time 算出來是 700&nbsp;ns，就代表
+      要把 ωₙ 設計得更快（犧牲一點雜訊抑制）或重新檢視 ζ，而不是去改 PJ/RJ 的統計假設——因為這個規格跟 PJ/RJ
+      完全是兩回事。
+    </p>
   </section>
 
   <!-- ===================== SECTION 4 : SIMULATION ===================== -->
   <section class="card" id="sec-sim">
     <div class="sec-tag b">④ 動手調：PID 追蹤模擬</div>
-    <h2>拖拉 Kp / Ki，即時看迴路怎麼追</h2>
+    <h2>4. 拖拉 Kp / Ki，即時看迴路怎麼追</h2>
     <p class="sub">把第②③節的理論接上真實的離散 bang-bang 遞迴，直接用與 MATLAB 迴路同款的更新式模擬。</p>
 
     <div class="eqbox">
@@ -418,6 +691,12 @@ footer{ text-align:center; color:var(--ink-faint); font-family:var(--font-mono);
 pi_code[n]  = pi_code[n−1]  + Kp · sign(e[n]) + freq_acc[n]</div>
       <div class="eq-label">與硬體相同的離散遞迴：sign-sign（bang-bang）PD 只給方向，不給大小</div>
     </div>
+    <p>
+      下面的「擾動輸入」對應到現實中兩種不同的事件來源：<b>相位階躍</b>是取樣時刻瞬間跳一下——例如剛鎖定時的初始相位差、
+      通道或連接器突然的 delay 變化——模擬上是目標相位從 0 瞬間跳到一個常數就不再變；<b>頻率躍階</b>則是 TX／RX 兩邊時鐘
+      頻率不一樣（ppm offset、溫度漂移、參考源切換）——因為相位是頻率的積分，固定的頻率差會讓目標相位隨時間線性爬升，
+      對應第②節「頻率躍階的完整時域推導」用的就是這個斜坡輸入。
+    </p>
 
     <div class="console">
       <div class="ctrl-row">
@@ -430,11 +709,30 @@ pi_code[n]  = pi_code[n−1]  + Kp · sign(e[n]) + freq_acc[n]</div>
         <input type="range" id="kiSlider" min="0" max="0.0004" step="0.000005" value="0.000025">
         <span class="val" id="kiVal">0.000025</span>
       </div>
-      <div class="btnrow">
-        <span class="chip active" data-dist="step">相位階躍擾動</span>
-        <span class="chip" data-dist="sj">正弦抖動 (SJ)</span>
-        <span class="chip active" data-mode="ideal" id="modeIdeal">理想線性 PD</span>
-        <span class="chip" data-mode="bbpd" id="modeBbpd">真實 bang-bang PD</span>
+      <div class="chip-group">
+        <div class="chip-group-label">擾動輸入（目標相位的形狀）</div>
+        <div class="btnrow">
+          <span class="chip active" data-dist="step">相位階躍擾動</span>
+          <span class="chip" data-dist="freq">頻率躍階擾動</span>
+          <span class="chip" data-dist="sj">正弦抖動 (SJ)</span>
+        </div>
+      </div>
+      <div class="ctrl-row" id="phaseStepRow">
+        <label for="phaseStepSlider">注入量 ΔΦ（UI）</label>
+        <input type="range" id="phaseStepSlider" min="0.02" max="0.5" step="0.01" value="0.2">
+        <span class="val" id="phaseStepVal">0.20</span>
+      </div>
+      <div class="ctrl-row" id="freqRateRow" style="display:none">
+        <label for="freqRateSlider">注入量 Δf（UI/symbol）</label>
+        <input type="range" id="freqRateSlider" min="0.0001" max="0.002" step="0.0001" value="0.0008">
+        <span class="val" id="freqRateVal">0.0008</span>
+      </div>
+      <div class="chip-group">
+        <div class="chip-group-label">PD 模型（誤差怎麼被量測）</div>
+        <div class="btnrow">
+          <span class="chip active" data-mode="ideal" id="modeIdeal">理想線性 PD</span>
+          <span class="chip" data-mode="bbpd" id="modeBbpd">真實 bang-bang PD</span>
+        </div>
       </div>
     </div>
 
@@ -448,18 +746,119 @@ pi_code[n]  = pi_code[n−1]  + Kp · sign(e[n]) + freq_acc[n]</div>
       <svg id="simChart" viewBox="0 0 760 320"></svg>
       <div class="tooltip" id="simTip"></div>
     </div>
+    <div class="chartwrap" id="freqAccWrap" style="display:none">
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--accent-2)"></span>freq_acc[n]（迴路內部學到的頻率修正量）</span>
+        <span><span class="swatch" style="background:var(--ink-faint)"></span>注入的 Δf（目標要學到的值）</span>
+      </div>
+      <svg id="freqAccChart" viewBox="0 0 760 220"></svg>
+      <div class="tooltip" id="freqAccTip"></div>
+    </div>
+    <div class="callout" id="freqAccNote" style="display:none">
+      <b>這張圖在回答「是不是只用到相位校正」：</b>上面 pi_code 那張圖只畫出「相位」這個最終輸出，看不出 Kp（比例/相位）
+      跟 Ki（積分/頻率）兩項各自做了多少事。這張圖單獨把 freq_acc[n]（遞迴式裡 Ki 累積起來的那一項）畫出來——它會從 0
+      開始慢慢爬升，最後貼近上面那條「注入的 Δf」虛線。freq_acc 收斂到 Δf，代表迴路已經學會「每個 symbol 要自己多走
+      Δf 這麼多」才能跟上斜坡——這才是真正在做頻率校正的部分，Kp／比例項只負責修正當下殘留的相位誤差，不會單獨把
+      穩態誤差壓到 0（這點把 Ki 滑桿拉到 0 再看一次 freq_acc 那條線就會貼在 0 不動，證實了這件事）。
+    </div>
     <div class="callout">
       <b>對照：</b>理想線性 PD 的曲線應該跟第③節解析式算出的 y(t) 呈現同樣的形狀——先衝過一點點（≈4–5% 過衝）再收斂，
       這正是在驗證「連續時間的特徵方程式模型」確實預測了「離散時間的真實遞迴」的行為。切到「真實 bang-bang PD」後，
       可以看到鎖定後仍持續微幅來回切換（limit-cycle 抖動）——因為 1-bit 偵測器永遠只回報方向、沒有「誤差剛好為零」這回事，
       這就是 sign-sign 偵測器的量化代價，也是選 ζ=2 要壓低（而非消除）的目標。
     </div>
+
+    <h3>兩個獨立變因：擾動輸入 × PD 模型</h3>
+    <p>
+      上面的切換鈕其實是兩組互相獨立的開關，可以任意交叉組合（2×3 共六種情境）。第一組決定<b>餵給迴路的目標相位長什麼樣</b>：
+      「相位階躍」是從 0 跳到 ΔΦ（可用滑桿調整注入量，預設 0.2 UI）的常數目標，對應第②③節解析式假設的輸入；「正弦抖動 (SJ)」則是振幅 0.15 UI、
+      週期 180 個 symbol 的正弦波目標，對應真實世界的 sinusoidal jitter；「頻率躍階」則是斜率固定的斜坡目標（每個
+      symbol 固定爬升一小段相位），對應兩邊時鐘有固定頻率差的情境，就是第②節 e₁(t)/e₂(t) 推導用的那個輸入。第二組
+      決定<b>偵測器怎麼量誤差</b>：「理想線性 PD」直接用誤差的實際大小，對應第②③節連續時間模型的假設；「真實
+      bang-bang PD」則不管誤差多大都只回報方向，對應硬體裡真實的 1-bit MM-PD。
+    </p>
+    <p>
+      <b>相位階躍 + 理想線性</b>：這組是用來「對帳」的——pi_code 應該跟第③節解析式算出的 y(t) 同一個形狀：先衝過頭
+      （ζ=2.0 時約 4–5% overshoot）再收斂到設定的 ΔΦ，最後完全貼平。如果這條曲線跟理論曲線對不上，代表離散遞迴或參數設錯了。
+    </p>
+    <p>
+      <b>相位階躍 + bang-bang</b>：整體上升／overshoot／收斂的「大形狀」會跟理想線性很像，但鎖定後不會完全貼平，而是在
+      目標值附近持續微幅鋸齒狀來回跳——這就是 limit-cycle，因為 1-bit 偵測器永遠不會輸出「誤差剛好等於 0」。把 Kp 相對
+      Ki 的比值（即 ζ）拉高，可以看到這個殘留抖動的 peak-to-peak 振幅變小——這正是選 ζ=2（過阻尼）而非更小值的理由：
+      犧牲一點追蹤速度換取 limit-cycle 振幅更小。
+    </p>
+    <p>
+      <b>正弦抖動 + 理想線性</b>：目標變成正弦波，這時候看到的其實是這個迴路的 jitter tracking/transfer 特性，跟
+      H(s) 在 \( s=j\omega \) 上的頻率響應是同一件事：
+    </p>
+    <div class="eqbox">
+      <div class="eq">\( |H(j\omega)|^2 = \dfrac{K_i^2 + (K_p\omega)^2}{(K_i-\omega^2)^2 + (K_p\omega)^2} \)</div>
+      <div class="eq-label">把 \( s=j\omega \) 代入 \( H(s)=\dfrac{K_p s + K_i}{s^2 + K_p s + K_i} \) 取模平方</div>
+    </div>
+    <p>
+      拿預設滑桿值代入：Kp=0.02、Ki=0.000025 時 \( \omega_n=\sqrt{K_i}=0.005 \) rad/symbol，\( \zeta = K_p/(2\omega_n) = 2.0 \)；
+      SJ 的角頻率 \( \omega_{SJ}=2\pi/180 \approx 0.0349 \) rad/symbol，比 ωₙ 快了約 7 倍。代入上式：
+    </p>
+    <div class="eqbox">
+      <div class="eq">\( |H(j\omega_{SJ})|^2 \approx \dfrac{4.88\times10^{-7}}{1.91\times10^{-6}} \approx 0.255 \,,\quad |H(j\omega_{SJ})| \approx 0.505 \)</div>
+    </div>
+    <p>
+      也就是說預設參數下，pi_code 只能追到輸入 SJ 振幅的一半左右（≈0.076 UI，而不是完整的 0.15 UI）——分析方法就是
+      直接拿圖上 pi_code 曲線的振幅跟那條虛線目標的振幅比，比值大概就會落在這個數字附近。這正是「\( H(0)=K_i/K_i=1 \)，
+      Type-II 迴路穩態誤差為零」的延伸：H(0)=1 只保證直流／極低頻 100% 追上，頻率一旦拉高就會依照這條 roll-off 曲線衰減。
+    </p>
+    <p>
+      <b>正弦抖動 + bang-bang</b>：兩個效應疊加——pi_code 大致還是跟著正弦波的形狀走（追蹤幅度受上面的 H(jω) 支配），
+      但曲線上會再疊一層 limit-cycle 鋸齒抖動，而且因為 bang-bang 是非線性飽和的（誤差再小也是輸出 ±1 的滿幅修正），
+      實際追蹤效果通常會比理想線性模型預測的更差一點，尤其是誤差本身已經很小、跟量化步階同等級的時候。
+    </p>
+    <p>
+      實際驗證的小練習：把 Ki 滑桿往右拉大（等於拉高 ωₙ，讓它超過 SJ 的 0.0349 rad/symbol），切到「正弦抖動」，
+      會看到 pi_code 的振幅越來越接近目標的 0.15 UI（追蹤越來越完整）；反過來把 Ki 壓低，振幅會明顯衰減。這就是用
+      這個模擬圖直接「看到」H(jω) 頻率響應的方式，也是實際做 CDR jitter tolerance 規格時會關心的同一個機制。
+    </p>
+    <p>
+      <b>頻率躍階 + 理想線性</b>：這組是直接拿模擬驗證第②節「為什麼要二階」的那個結論。目標相位變成一條斜坡，
+      圖上拉的時間範圍也拉長到 2000 個 symbol，好讓收斂趨勢看得出來。把 Ki 滑桿壓到 0（迴路退化成只剩比例項的一階系統）
+      再切到「頻率躍階」，會看到 pi_code 跟目標斜坡之間維持一個<b>固定不會再縮小</b>的穩態誤差——這正是第②節算出來的
+      e₁(t) 收斂到非零平台。把 Ki 滑桿調回正常值（二階），同樣的頻率躍階輸入下，pi_code 跟目標之間的誤差會隨時間
+      慢慢縮小、趨近於 0（ωₙ 越大收斂越快）——對應 e₂(t)→0。同一張圖、同一個輸入，只差 Ki 是不是 0，就能直接看到
+      「一階只能壓掉相位階躍、壓不掉頻率階躍；二階兩者都能壓到 0」這句話的實際樣子。
+    </p>
+    <p>
+      跟相位階躍的 ΔΦ 一樣，頻率躍階也有一個明確的「注入量」：切到「頻率躍階擾動」後會多出一顆
+      <b>Δf（UI/symbol）</b>滑桿，預設 0.0008 UI/symbol（換算成相對頻率偏移約 800 ppm，數量級對應一般時鐘容差
+      加上部分 SSC 下展頻的情境），可以自己拉大拉小看效果。下面還會多畫一張圖，單獨把 <b>freq_acc[n]</b>——遞迴式
+      裡 Ki 累積出來的那一項——畫出來，旁邊那條虛線就是目前設定的 Δf。pi_code 那張主圖只看得到「相位」這個最終
+      合成結果，看不出 Kp（比例、修相位）跟 Ki（積分、修頻率）各自做了多少；這張 freq_acc 圖才是直接回答「是不是
+      只用到相位校正」的證據——它會從 0 慢慢爬升、貼近 Δf 那條虛線，代表迴路確實把頻率差學起來了，不是只靠比例項
+      在瞬間誤差上打轉。
+    </p>
+    <p>
+      <b>頻率躍階 + bang-bang</b>：大趨勢跟理想線性一樣（Ki=0 時誤差收斂到一個非零常數附近、Ki&gt;0 時誤差慢慢趨近
+      0），但疊了一層 limit-cycle 鋸齒，而且因為 1-bit 偵測器要追上持續爬升的斜坡，sign 必須長期偏向同一個方向
+      （duty cycle 不對稱）才能讓平均增量跟上斜率，鋸齒的不對稱程度會比純相位階躍時更明顯——這也是真實硬體在有
+      固定頻率 offset 時，bang-bang CDR 的 duty-cycle 會系統性地偏向某一側的原因。
+    </p>
+    <div class="callout warn">
+      <b>跟正式 MATLAB 模擬的落差：</b>這裡的「頻率躍階擾動」只存在於這個教學頁面，<code>stage6_6_1_TiSarAdc_256SliceDsp
+      _Main_Demo.m</code> 目前的 <code>jitterCfg</code> 還沒有對應的注入機制——現有的只有 <code>enableRJ</code>（高斯
+      RJ）跟 <code>enableSJ</code>（正弦或相位階躍）兩種，沒有能讓 TX/RX 兩邊符元時脈真正存在固定 ppm 頻差的選項。
+      暫時沒實作的原因：(1) 目前的驗證重心是 IEEE 802.3 Table 162-17 的 JTOL（RJ/SJ 容忍度）跟步階響應收斂驗證，
+      這兩者都假設 TX/RX 共用同一個參考時脈（synchronous），頻差屬於另一個獨立規格項（參考時脈容差、CDR pull-in
+      range），傳統上用解析公式或單一數值去驗證，不一定要跟 JTOL 的逐 bit 模擬綁在一起；(2) 真正要做到頻差，TX
+      符元時脈跟 RX 取樣時脈必須各自獨立產生再做非同步重取樣（asynchronous resampling），而不是像相位階躍／SJ
+      那樣單純疊加一個時序擾動就好——這會動到目前假設「TX/RX symbol grid 同步」的訊號產生與通道模型架構，改動
+      範圍比加一個擾動參數大得多。這頁的模擬器是用「目標相位斜坡」簡化模擬頻差的效果（數學上等價，但沒有真的做
+      非同步重取樣），用來驗證二階特徵方程式本身的結論；真正要在正式模擬裡驗證頻差下的 pull-in/鎖定行為，還是
+      需要把這個非同步重取樣的機制補進去，列為後續待辦。
+    </div>
   </section>
 
   <!-- ===================== SECTION 5 : VCO / DPI ===================== -->
   <section class="card" id="sec-vco">
     <div class="sec-tag">⑤ 收尾：相位值怎麼變成一顆真實時鐘</div>
-    <h2>MM-PD 訓練、VCO 與 8-PI + DPI</h2>
+    <h2>5. MM-PD 訓練、VCO 與 8-PI + DPI</h2>
     <p class="sub">把前四節串起來：PAM4 電壓 → 相位誤差 → Kp/Ki 直接計算 → pi_code → 量化成實際取樣時鐘邊緣。</p>
 
     <h3>MM-PD 怎麼用 PAM4 電壓把 δ 追到 0</h3>
@@ -521,7 +920,7 @@ themeBtn.addEventListener('click',function(){
 });
 
 /* ---------- scroll spy ---------- */
-var secIds=['sec-mmpd','sec-char','sec-valid','sec-sim','sec-vco'];
+var secIds=['sec-intro','sec-mmpd','sec-char','sec-valid','sec-sim','sec-vco'];
 var dotEls={};
 document.querySelectorAll('.dot').forEach(function(d){ dotEls[d.dataset.sec]=d; });
 function onScroll(){
@@ -781,21 +1180,34 @@ var simSvg=document.getElementById('simChart');
 var simReadout=document.getElementById('simReadout');
 var kpSlider=document.getElementById('kpSlider'), kiSlider=document.getElementById('kiSlider');
 var kpVal=document.getElementById('kpVal'), kiVal=document.getElementById('kiVal');
+var phaseStepSlider=document.getElementById('phaseStepSlider'), phaseStepVal=document.getElementById('phaseStepVal');
+var phaseStepRow=document.getElementById('phaseStepRow');
+var freqRateSlider=document.getElementById('freqRateSlider'), freqRateVal=document.getElementById('freqRateVal');
+var freqRateRow=document.getElementById('freqRateRow'), freqAccWrap=document.getElementById('freqAccWrap'), freqAccNote=document.getElementById('freqAccNote');
 var distMode='step', pdMode='ideal';
+function updateDistVisibility(){
+  phaseStepRow.style.display = (distMode==='step') ? '' : 'none';
+  var showFreq = (distMode==='freq') ? '' : 'none';
+  freqRateRow.style.display = showFreq;
+  freqAccWrap.style.display = showFreq;
+  freqAccNote.style.display = showFreq;
+}
 document.querySelectorAll('[data-dist]').forEach(function(c){
   c.addEventListener('click',function(){
     document.querySelectorAll('[data-dist]').forEach(function(x){x.classList.remove('active');});
-    c.classList.add('active'); distMode=c.dataset.dist; drawSim();
+    c.classList.add('active'); distMode=c.dataset.dist; updateDistVisibility(); drawSim();
   });
 });
 document.getElementById('modeIdeal').addEventListener('click',function(){ pdMode='ideal'; this.classList.add('active'); document.getElementById('modeBbpd').classList.remove('active'); drawSim(); });
 document.getElementById('modeBbpd').addEventListener('click',function(){ pdMode='bbpd'; this.classList.add('active'); document.getElementById('modeIdeal').classList.remove('active'); drawSim(); });
+freqRateSlider.addEventListener('input',drawSim);
+phaseStepSlider.addEventListener('input',drawSim);
 
-function runDiscreteLoop(kp,ki,nSteps,target,mode){
+function runDiscreteLoop(kp,ki,nSteps,target,mode,freqRate){
   var pi_code=0, freq_acc=0;
-  var pts=[], tgtPts=[];
+  var pts=[], tgtPts=[], freqAccPts=[];
   for(var n=0;n<nSteps;n++){
-    var tgt = (distMode==='sj') ? 0.15*Math.sin(2*Math.PI*n/180) : target;
+    var tgt = (distMode==='sj') ? 0.15*Math.sin(2*Math.PI*n/180) : (distMode==='freq' ? freqRate*n : target);
     var err = tgt - pi_code;
     var e_sign;
     if(mode==='ideal'){
@@ -807,16 +1219,19 @@ function runDiscreteLoop(kp,ki,nSteps,target,mode){
     pi_code += kp*e_sign + freq_acc;
     pts.push([n,pi_code]);
     tgtPts.push([n,tgt]);
+    freqAccPts.push([n,freq_acc]);
   }
-  return {pts:pts, tgtPts:tgtPts};
+  return {pts:pts, tgtPts:tgtPts, freqAccPts:freqAccPts};
 }
 function drawSim(){
   var kp=parseFloat(kpSlider.value), ki=parseFloat(kiSlider.value);
-  kpVal.textContent=kp.toFixed(4); kiVal.textContent=ki.toFixed(6);
+  var freqRate=parseFloat(freqRateSlider.value);
+  var phaseStep=parseFloat(phaseStepSlider.value);
+  kpVal.textContent=kp.toFixed(4); kiVal.textContent=ki.toFixed(6); freqRateVal.textContent=freqRate.toFixed(4); phaseStepVal.textContent=phaseStep.toFixed(2);
   var zeta = ki>0 ? kp/(2*Math.sqrt(ki)) : NaN;
   var wn = Math.sqrt(ki);
-  var nSteps = 400;
-  var res=runDiscreteLoop(kp,ki,nSteps,0.2,pdMode);
+  var nSteps = (distMode==='freq') ? 2000 : 400;
+  var res=runDiscreteLoop(kp,ki,nSteps,phaseStep,pdMode,freqRate);
   var allY=res.pts.map(function(p){return p[1];}).concat(res.tgtPts.map(function(p){return p[1];}));
   var ymin=Math.min.apply(null,allY)-0.05, ymax=Math.max.apply(null,allY)+0.05;
   var ch=new Chart(simSvg,{xmin:0,xmax:nSteps,ymin:ymin,ymax:ymax});
@@ -826,13 +1241,37 @@ function drawSim(){
   ch.path(res.pts,'var(--accent)',2.2);
   bindHover(simSvg, document.getElementById('simTip'), ch, res.pts, function(x,y){ return 'n='+x.toFixed(0)+'  pi_code='+y.toFixed(4)+' UI'; }, 'var(--accent)');
 
-  var regime = isNaN(zeta)? 'N/A' : (zeta<1?'欠阻尼（會震盪）':(Math.abs(zeta-1)<0.05?'臨界阻尼':'過阻尼'));
+  if(distMode==='freq'){
+    var freqAccSvg=document.getElementById('freqAccChart');
+    var faY=res.freqAccPts.map(function(p){return p[1];});
+    var faMin=Math.min.apply(null,faY.concat([0])), faMax=Math.max.apply(null,faY.concat([freqRate]));
+    var pad=(faMax-faMin)*0.15||0.0001;
+    var ch2=new Chart(freqAccSvg,{xmin:0,xmax:nSteps,ymin:faMin-pad,ymax:faMax+pad});
+    ch2.clear();
+    ch2.axes([0,nSteps/2,nSteps],[Number((faMin-pad).toFixed(4)),Number(((faMin+faMax)/2).toFixed(4)),Number((faMax+pad).toFixed(4))],function(v){return v;},function(v){return v.toFixed(4);});
+    ch2.hline(freqRate,'var(--ink-faint)','4,4');
+    ch2.path(res.freqAccPts,'var(--accent-2)',2.2);
+    bindHover(freqAccSvg, document.getElementById('freqAccTip'), ch2, res.freqAccPts, function(x,y){ return 'n='+x.toFixed(0)+'  freq_acc='+y.toFixed(5)+' UI/symbol'; }, 'var(--accent-2)');
+  }
+
+  var regime = isNaN(zeta)? 'N/A（一階，只剩比例項）' : (zeta<1?'欠阻尼（會震盪）':(Math.abs(zeta-1)<0.05?'臨界阻尼':'過阻尼'));
   var regimeClass = isNaN(zeta)? '' : (zeta<1?'critical':(Math.abs(zeta-1)<0.05?'warn':'good'));
+  var distLabel = distMode==='sj' ? '正弦抖動 (SJ)' : (distMode==='freq' ? '頻率躍階' : '相位階躍');
+  var lastErr = res.tgtPts[res.tgtPts.length-1][1] - res.pts[res.pts.length-1][1];
+  var ssRow = (distMode==='freq')
+    ? '<div class="readout"><div class="k">注入的 Δf</div><div class="v">'+freqRate.toFixed(4)+' UI/symbol（≈'+(freqRate*1e6).toFixed(0)+' ppm）</div></div>'+
+      '<div class="readout"><div class="k">n='+nSteps+' 時的殘留誤差</div><div class="v '+(Math.abs(lastErr)<0.01?'good':'warn')+'">'+lastErr.toFixed(4)+' UI</div></div>'+
+      '<div class="readout"><div class="k">freq_acc 學到 / 應學到</div><div class="v">'+res.freqAccPts[res.freqAccPts.length-1][1].toFixed(5)+' / '+freqRate.toFixed(5)+'</div></div>'
+    : (distMode==='step')
+    ? '<div class="readout"><div class="k">注入的 ΔΦ</div><div class="v">'+phaseStep.toFixed(2)+' UI</div></div>'
+    : '';
   simReadout.innerHTML =
     '<div class="readout"><div class="k">等效 ζ = Kp/(2√Ki)</div><div class="v '+regimeClass+'">'+(isNaN(zeta)?'—':zeta.toFixed(2))+'</div></div>'+
     '<div class="readout"><div class="k">等效 ωₙ = √Ki</div><div class="v">'+wn.toFixed(4)+'</div></div>'+
     '<div class="readout"><div class="k">阻尼區間</div><div class="v '+regimeClass+'">'+regime+'</div></div>'+
-    '<div class="readout"><div class="k">PD 模式</div><div class="v">'+(pdMode==='ideal'?'理想線性':'真實 bang-bang')+'</div></div>';
+    '<div class="readout"><div class="k">擾動輸入</div><div class="v">'+distLabel+'</div></div>'+
+    '<div class="readout"><div class="k">PD 模式</div><div class="v">'+(pdMode==='ideal'?'理想線性':'真實 bang-bang')+'</div></div>'+
+    ssRow;
 }
 [kpSlider,kiSlider].forEach(function(s){ s.addEventListener('input',drawSim); });
 
@@ -900,4 +1339,5 @@ drawVco();
 })();
 </script>
 
-</body></html>
+</body>
+</html>
